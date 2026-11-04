@@ -1,10 +1,12 @@
 import 'server-only'
+import dns from 'node:dns'
 import fs from 'node:fs'
 import path from 'node:path'
 import type { PGlite } from '@electric-sql/pglite'
 import type { Pool } from 'pg'
 import { connection } from 'next/server'
-import { cleanDatabaseUrl, parseDatabaseUrl } from './databaseUrl'
+import { cleanDatabaseUrl, parseDatabaseUrl, type DatabaseConfig } from './databaseUrl'
+import { classifyPoolerError, findSupabasePooler, supabaseDirectRef } from './supabasePooler'
 import { dataDir } from './dataDir'
 
 /**
@@ -28,10 +30,49 @@ type Engine = {
 
 const toNumber = (value: string) => Number(value)
 
+/** How the app reached PostgreSQL; shown (without host names) by /api/health. */
+export let connectionRoute: 'direct' | 'supabase-pooler-auto' | null = null
+
+async function hasIPv4Address(host: string) {
+  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return true
+  try {
+    return (await dns.promises.resolve4(host)).length > 0
+  } catch {
+    return false
+  }
+}
+
+/** Opens one short connection to check whether a pooler host accepts these credentials. */
+async function probePooler(config: DatabaseConfig) {
+  const pg = await import('pg')
+  const client = new pg.Client({ ...config, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 6_000 })
+  try {
+    await client.connect()
+    await client.query('select 1')
+    return 'connected' as const
+  } catch (error) {
+    return classifyPoolerError(error)
+  } finally {
+    await client.end().catch(() => undefined)
+  }
+}
+
 async function createPostgresEngine(databaseUrl: string): Promise<Engine> {
   const parsed = parseDatabaseUrl(databaseUrl)
   if (!parsed.ok) throw new Error(parsed.message)
-  const { config } = parsed
+  let config = parsed.config
+  // Serverless hosts such as Vercel only have IPv4: prefer IPv4 addresses whenever a host has both.
+  dns.setDefaultResultOrder('ipv4first')
+  connectionRoute = 'direct'
+  // Supabase's Direct host is IPv6-only unless the IPv4 add-on is enabled. Without an IPv4 address,
+  // switch automatically to the project's IPv4 connection pooler.
+  if (supabaseDirectRef(config.host) && !(await hasIPv4Address(config.host))) {
+    const directHost = config.host
+    config = await findSupabasePooler(config, probePooler)
+    connectionRoute = 'supabase-pooler-auto'
+    console.info(`[futick] ${directHost} has no IPv4 address; connected through the Supabase pooler ${config.host}:${config.port}. `
+      + `Set DATABASE_URL to the Transaction pooler string to skip this lookup on cold starts.`)
+  }
   const pg = await import('pg')
   pg.types.setTypeParser(20, toNumber) // int8 / count(*)
   pg.types.setTypeParser(1700, toNumber) // numeric
