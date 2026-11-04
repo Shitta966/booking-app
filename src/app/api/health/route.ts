@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server'
 import { databaseKind, DatabaseInitError, query } from '@/lib/db'
+import { parseDatabaseUrl } from '@/lib/databaseUrl'
 
 const HINTS: Record<string, string> = {
   configure: 'DATABASE_URL is missing or invalid. Set it in Vercel → Settings → Environment Variables, then redeploy.',
@@ -13,13 +14,19 @@ function scrub(text: string) {
   return text.replace(/postgres(ql)?:\/\/\S+/gi, '[connection string]').replace(/password=\S+/gi, 'password=[hidden]').slice(0, 300)
 }
 
-function databaseTarget() {
-  try {
-    const url = new URL(process.env.DATABASE_URL ?? '')
-    return `${url.hostname}:${url.port || '5432'}`
-  } catch {
-    return null
-  }
+/**
+ * What FUTICK understood from DATABASE_URL, without revealing it: the kind of problem, or the kind of host
+ * and the port. This endpoint is public, so it never shows the host name, user name or password.
+ */
+function databaseUrlSummary() {
+  if (!process.env.DATABASE_URL?.trim()) return null
+  const parsed = parseDatabaseUrl(process.env.DATABASE_URL)
+  if (!parsed.ok) return { problem: parsed.problem, message: parsed.message }
+  const { host, port } = parsed.config
+  const hostKind = /\.pooler\.supabase\.com$/i.test(host) ? 'supabase-pooler'
+    : /\.supabase\.co$/i.test(host) ? 'supabase-direct (IPv6 only — use the pooler on Vercel)'
+      : 'other'
+  return { problem: null, hostKind, port }
 }
 
 /**
@@ -40,9 +47,10 @@ export async function GET() {
       hint: HINTS[stage] ?? 'A database query failed.',
       error: {
         code: (original as { code?: string })?.code ?? null,
-        message: scrub(original instanceof Error ? original.message : String(original)),
+        // Our own configuration messages are safe to show; driver messages can name hosts, so they stay in the logs.
+        message: stage === 'configure' && original instanceof Error ? scrub(original.message) : 'See the Vercel function logs for details.',
       },
-      databaseTarget: databaseTarget(),
+      databaseUrl: databaseUrlSummary(),
       settings: {
         DATABASE_URL: Boolean(process.env.DATABASE_URL?.trim()),
         SESSION_SECRET: secretOk('SESSION_SECRET'),

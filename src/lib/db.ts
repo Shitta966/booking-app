@@ -4,6 +4,7 @@ import path from 'node:path'
 import type { PGlite } from '@electric-sql/pglite'
 import type { Pool } from 'pg'
 import { connection } from 'next/server'
+import { cleanDatabaseUrl, parseDatabaseUrl } from './databaseUrl'
 import { dataDir } from './dataDir'
 
 /**
@@ -27,17 +28,26 @@ type Engine = {
 
 const toNumber = (value: string) => Number(value)
 
-async function createPostgresEngine(connectionString: string): Promise<Engine> {
+async function createPostgresEngine(databaseUrl: string): Promise<Engine> {
+  const parsed = parseDatabaseUrl(databaseUrl)
+  if (!parsed.ok) throw new Error(parsed.message)
+  const { config } = parsed
   const pg = await import('pg')
   pg.types.setTypeParser(20, toNumber) // int8 / count(*)
   pg.types.setTypeParser(1700, toNumber) // numeric
+  // Connection fields are passed separately (not as a URL) so passwords with special characters work.
   const pool: Pool = new pg.Pool({
-    connectionString,
+    host: config.host,
+    port: config.port,
+    user: config.user,
+    password: config.password,
+    database: config.database,
     // Serverless hosts run many small instances, each with its own pool; keep each one small there.
     max: Number(process.env.DATABASE_POOL_SIZE ?? (process.env.VERCEL ? 2 : 10)),
-    // Hosted Postgres (Supabase direct or pooler, Neon) requires TLS. Their certificates are not in Node's
-    // default trust store, so the connection is encrypted without chain verification.
-    ssl: /sslmode=require|supabase\.(co|com)|neon\.tech/.test(connectionString) ? { rejectUnauthorized: false } : undefined,
+    connectionTimeoutMillis: 10_000,
+    // Hosted Postgres (Supabase, Neon) requires TLS. Their certificates are not in Node's default
+    // trust store, so the connection is encrypted without chain verification.
+    ssl: config.ssl ? { rejectUnauthorized: false } : undefined,
   })
   return {
     kind: 'postgres',
@@ -115,7 +125,7 @@ async function step<T>(stage: DatabaseInitError['stage'], run: () => Promise<T>)
 }
 
 async function initialize(): Promise<Engine> {
-  const url = process.env.DATABASE_URL?.trim()
+  const url = cleanDatabaseUrl(process.env.DATABASE_URL)
   const engine = await step('configure', () => (url ? createPostgresEngine(url) : createPgliteEngine()))
   await step('connect', () => engine.query('select 1'))
   const schema = fs.readFileSync(path.join(process.cwd(), 'db', 'schema.sql'), 'utf8')
