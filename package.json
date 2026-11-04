@@ -2,7 +2,10 @@
   "name": "futick",
   "version": "0.1.0",
   "private": true,
-  "description": "FUTICK — corporate event planning and ticket management for FUT Minna",
+  "description": "FUTICK \u2014 corporate event planning and ticket management for FUT Minna",
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
