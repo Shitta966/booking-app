@@ -97,13 +97,30 @@ async function createPgliteEngine(): Promise<Engine> {
   }
 }
 
+/** Start-up failure, tagged with the stage that failed so /api/health can say what to fix. */
+export class DatabaseInitError extends Error {
+  constructor(public stage: 'configure' | 'connect' | 'schema' | 'bootstrap', public original: unknown) {
+    super(`Database ${stage} failed: ${original instanceof Error ? original.message : String(original)}`)
+  }
+}
+
+async function step<T>(stage: DatabaseInitError['stage'], run: () => Promise<T>): Promise<T> {
+  try {
+    return await run()
+  } catch (error) {
+    console.error(`[futick] database ${stage} failed`, error)
+    throw new DatabaseInitError(stage, error)
+  }
+}
+
 async function initialize(): Promise<Engine> {
   const url = process.env.DATABASE_URL?.trim()
-  const engine = url ? await createPostgresEngine(url) : await createPgliteEngine()
+  const engine = await step('configure', () => (url ? createPostgresEngine(url) : createPgliteEngine()))
+  await step('connect', () => engine.query('select 1'))
   const schema = fs.readFileSync(path.join(process.cwd(), 'db', 'schema.sql'), 'utf8')
-  await engine.exec(schema)
+  await step('schema', () => engine.exec(schema))
   const { bootstrap } = await import('./seed')
-  await bootstrap(engine)
+  await step('bootstrap', () => bootstrap(engine))
   return engine
 }
 
