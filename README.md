@@ -53,7 +53,7 @@ Data in the local development database (`~/.futick`) is not copied to Supabase; 
 
 ### Deploy to Vercel
 
-1. In Vercel, **Add New → Project** and import the GitHub repository. `vercel.json` sets the framework to Next.js, the install command to `npm ci` and the build command to `npm run build`, overriding whatever the dashboard says (this repository was first deployed as a Vite app). `package.json` pins Node 22.
+1. In Vercel, **Add New → Project** and import the GitHub repository. `vercel.json` sets the framework to Next.js, the install command to `npm ci` and the build command to `npm run build`, overriding whatever the dashboard says (this repository was first deployed as a Vite app). `package.json` pins Node 24 (match it under Settings → Build and Deployment → Node.js Version).
 2. Under **Settings → Environment Variables**, add everything marked *required* in `.env.example`:
    - `DATABASE_URL` (Supabase Transaction pooler);
    - `SESSION_SECRET` and `TICKET_SIGNING_SECRET`;

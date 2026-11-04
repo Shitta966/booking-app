@@ -4,7 +4,7 @@
   "private": true,
   "description": "FUTICK \u2014 corporate event planning and ticket management for FUT Minna",
   "engines": {
-    "node": "22.x"
+    "node": "24.x"
   },
   "scripts": {
     "dev": "next dev",
