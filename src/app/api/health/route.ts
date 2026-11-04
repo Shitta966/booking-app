@@ -41,10 +41,15 @@ export async function GET() {
     const stage = error instanceof DatabaseInitError ? error.stage : 'query'
     const original = error instanceof DatabaseInitError ? error.original : error
     const secretOk = (name: string) => (process.env[name]?.trim().length ?? 0) >= 32
+    const parsed = parseDatabaseUrl(process.env.DATABASE_URL)
+    const directSupabase = parsed.ok && /^db\.[a-z0-9]+\.supabase\.co$/i.test(parsed.config.host)
+    const hint = directSupabase
+      ? 'DATABASE_URL is Supabase\'s Direct connection, which only works over IPv6 and cannot be reached from Vercel. In Supabase → Connect, choose "Transaction pooler" (port 6543, user postgres.<project-ref>) and use that string instead.'
+      : HINTS[stage] ?? 'A database query failed.'
     return NextResponse.json({
       status: 'error',
       stage,
-      hint: HINTS[stage] ?? 'A database query failed.',
+      hint,
       error: {
         code: (original as { code?: string })?.code ?? null,
         // Our own configuration messages are safe to show; driver messages can name hosts, so they stay in the logs.
