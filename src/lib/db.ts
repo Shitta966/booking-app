@@ -3,6 +3,7 @@ import fs from 'node:fs'
 import path from 'node:path'
 import type { PGlite } from '@electric-sql/pglite'
 import type { Pool } from 'pg'
+import { connection } from 'next/server'
 import { dataDir } from './dataDir'
 
 /**
@@ -137,6 +138,9 @@ function engine(): Promise<Engine> {
 }
 
 export async function query<T = Record<string, unknown>>(sql: string, params: Params = []): Promise<T[]> {
+  // Database reads only ever happen for a live request: this stops `next build` from starting the
+  // database while it tries to pre-render pages (on Vercel that would connect to Supabase at build time).
+  await connection()
   return (await engine()).query<T>(sql, params)
 }
 
@@ -146,9 +150,11 @@ export async function queryOne<T = Record<string, unknown>>(sql: string, params:
 }
 
 export async function transaction<T>(fn: (db: Queryable) => Promise<T>): Promise<T> {
+  await connection()
   return (await engine()).transaction(fn)
 }
 
 export async function databaseKind() {
+  await connection()
   return (await engine()).kind
 }
