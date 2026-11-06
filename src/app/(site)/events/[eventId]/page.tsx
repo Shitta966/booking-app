@@ -1,15 +1,17 @@
 import Link from 'next/link'
 import { notFound } from 'next/navigation'
-import { Building2, CalendarDays, Clock3, MapPin } from 'lucide-react'
+import { Building2, CalendarDays, Clock3, Gift, MapPin } from 'lucide-react'
 import { bookTickets } from '@/app/actions/attendee'
 import { Flash } from '@/components/ui'
 import { getCurrentUser } from '@/lib/auth'
 import { query, queryOne } from '@/lib/db'
 import { formatDate, formatMoney, formatTime } from '@/lib/format'
+import { getSettings } from '@/lib/settings'
 
 type EventDetail = {
   id: string; title: string; summary: string; description: string; category: string; venue: string
   start_time: Date; end_time: Date; poster_url: string | null; status: string; org_name: string; org_status: string; org_description: string
+  accepts_reward_coupons: boolean
 }
 type TicketOption = { id: string; name: string; description: string; price_minor: number; remaining: number; max_per_order: number; on_sale: boolean }
 
@@ -33,6 +35,16 @@ export default async function EventPage({ params, searchParams }: { params: Prom
     ),
     getCurrentUser(),
   ])
+  const { referrals } = await getSettings()
+  const rewardsAccepted = referrals.enabled && event.accepts_reward_coupons
+  const hasPaidTickets = tickets.some((ticket) => ticket.price_minor > 0)
+  const coupons = user && rewardsAccepted && hasPaidTickets
+    ? await query<{ id: string; code: string; value_cap_minor: number; expires_at: Date }>(
+      `select id, code, value_cap_minor, expires_at from reward_coupons
+       where user_id = $1 and status = 'available' and expires_at > now() order by expires_at`,
+      [user.id],
+    )
+    : []
   const bookable = event.status === 'published' && event.org_status === 'active' && new Date(event.end_time) > new Date()
 
   return (
@@ -48,6 +60,11 @@ export default async function EventPage({ params, searchParams }: { params: Prom
           </div>
           <p className="mt-6 text-xs font-semibold uppercase tracking-widest text-brand-600">{event.category}</p>
           <h1 className="mt-1 text-3xl font-bold tracking-tight md:text-4xl">{event.title}</h1>
+          {rewardsAccepted && (
+            <Link href="/rewards" className="mt-3 inline-flex items-center gap-2 rounded-full bg-gold-400/25 px-3 py-1.5 text-xs font-semibold text-moss-900 hover:bg-gold-400/40">
+              <Gift size={14} /> Accepts FUTICK reward tickets
+            </Link>
+          )}
           {event.status === 'cancelled' && <p className="mt-3 rounded-lg bg-rose-50 px-4 py-2 text-sm font-medium text-rose-700">This event has been cancelled.</p>}
           <div className="mt-5 grid gap-3 text-sm text-slate-600 sm:grid-cols-3">
             <p className="flex items-center gap-2"><CalendarDays size={16} className="text-brand-600" />{formatDate(event.start_time)}</p>
@@ -86,6 +103,22 @@ export default async function EventPage({ params, searchParams }: { params: Prom
                   <label className="field">Quantity
                     <input type="number" name="quantity" min={1} max={50} defaultValue={1} className="input" />
                   </label>
+                  {coupons.length > 0 && (
+                    <fieldset className="rounded-2xl bg-gold-400/15 p-3">
+                      <legend className="sr-only">Use a reward</legend>
+                      <p className="mb-2 flex items-center gap-2 text-sm font-semibold text-moss-900"><Gift size={15} /> You have {coupons.length} free-ticket reward{coupons.length === 1 ? '' : 's'}</p>
+                      <label className="flex items-center gap-2 py-1 text-sm"><input type="radio" name="coupon_id" value="" defaultChecked className="accent-brand-600" /> Don’t use a reward</label>
+                      {coupons.map((coupon) => (
+                        <label key={coupon.id} className="flex items-center gap-2 py-1 text-sm">
+                          <input type="radio" name="coupon_id" value={coupon.id} className="accent-brand-600" />
+                          <span><span className="font-mono font-semibold">{coupon.code}</span> <span className="text-xs text-moss-800/70">covers one ticket up to {formatMoney(Number(coupon.value_cap_minor))} · expires {formatDate(coupon.expires_at)}</span></span>
+                        </label>
+                      ))}
+                    </fieldset>
+                  )}
+                  {user && rewardsAccepted && hasPaidTickets && coupons.length === 0 && (
+                    <p className="text-xs text-moss-800/70"><Gift size={12} className="mr-1 inline" />Invite {referrals.friendsPerReward} friends and get a ticket like this free. <Link href="/rewards" className="font-semibold underline">Get your invite link</Link></p>
+                  )}
                   {bookable ? (
                     user ? <button className="btn-primary w-full">Reserve tickets</button>
                       : <Link href={`/login?next=/events/${event.id}`} className="btn-primary w-full">Log in to book</Link>

@@ -6,7 +6,7 @@ import { useState } from 'react'
 import clsx from 'clsx'
 import {
   BarChart3, Building2, CalendarDays, ChevronsLeft, ChevronsRight, Ellipsis, ClipboardList, CreditCard, Globe, HelpCircle, LayoutDashboard, LogOut, Menu, Plus, ScanLine,
-  ScrollText, Settings, ShieldCheck, Ticket, Users, X, type LucideIcon,
+  Gift, ScrollText, Settings, ShieldCheck, Ticket, Users, X, type LucideIcon,
 } from 'lucide-react'
 import { NotificationBell } from './NotificationBell'
 import { LogoMark } from './ui'
@@ -14,7 +14,7 @@ import { LogoMark } from './ui'
 const ICONS: Record<string, LucideIcon> = {
   overview: LayoutDashboard, events: CalendarDays, orders: CreditCard, scan: ScanLine, team: Users, settings: Settings,
   organizations: Building2, users: Users, plans: ClipboardList, audit: ScrollText, stats: BarChart3, tickets: Ticket, admin: ShieldCheck,
-  help: HelpCircle, site: Globe,
+  help: HelpCircle, site: Globe, rewards: Gift,
 }
 
 export type NavItem = { href: string; label: string; icon: keyof typeof ICONS; exact?: boolean; badge?: number; badgeTone?: 'gold' | 'red' }

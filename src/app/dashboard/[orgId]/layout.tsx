@@ -22,6 +22,7 @@ export default async function OrgLayout({ children, params }: { children: React.
     { href: `${base}/events`, label: 'Events', icon: 'events' },
     ...(reviewer ? [{ href: `${base}/orders`, label: 'Orders', icon: 'orders', badge: awaiting } as NavItem] : []),
     { href: `${base}/scan`, label: 'Check-in', icon: 'scan', badge: 0 },
+    { href: `${base}/rewards`, label: 'Rewards', icon: 'rewards' },
     ...(can(role, 'team.manage') ? [{ href: `${base}/team`, label: 'Team', icon: 'team' } as NavItem] : []),
   ]
   const bottomNav: NavItem[] = [

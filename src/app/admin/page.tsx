@@ -43,6 +43,13 @@ export default async function AdminOverview({ searchParams }: { searchParams: Pr
        from generate_series((now() at time zone 'Africa/Lagos')::date - 11, (now() at time zone 'Africa/Lagos')::date, interval '1 day') d order by d`,
     ),
   ])
+  const [referral] = await query<{ joined: number; qualified: number; issued: number; used: number; pro_months: number }>(
+    `select (select count(*) from users where referred_by is not null) as joined,
+            (select count(*) from users where referral_qualified_at is not null) as qualified,
+            (select count(*) from reward_coupons) as issued,
+            (select count(*) from reward_coupons where status = 'used') as used,
+            coalesce((select sum(months) from org_reward_redemptions), 0) as pro_months`,
+  )
   const checkInRate = stats.tickets ? Math.round((stats.checked_in / stats.tickets) * 100) : 0
   const naira = (value: number) => (value ? formatMoney(value) : '₦0')
 
@@ -74,6 +81,17 @@ export default async function AdminOverview({ searchParams }: { searchParams: Pr
             <div><p className="text-xs text-slate-400">Check-in rate</p><p className="text-2xl font-semibold text-slate-900">{checkInRate}%</p><p className="text-[11px] text-slate-400">{stats.checked_in.toLocaleString()} of {stats.tickets.toLocaleString()} tickets</p></div>
           </div>
         </div>
+      </div>
+
+      <div className="mt-6 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {[
+          ['Referred sign-ups', referral.joined],
+          ['Referrals that booked', referral.qualified],
+          ['Free tickets issued', `${referral.issued} (${referral.used} used)`],
+          ['Pro months earned by organisers', referral.pro_months],
+        ].map(([label, value]) => (
+          <div key={label as string} className="card p-5"><p className="text-xs text-slate-400">{label}</p><p className="mt-1 text-xl font-semibold text-slate-900">{value}</p></div>
+        ))}
       </div>
 
       <div className="mt-6 grid gap-6 xl:grid-cols-[0.8fr_1.2fr_1fr]">

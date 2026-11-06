@@ -39,7 +39,8 @@ export async function updateOrganizationPlan(form: FormData) {
   const planId = text(form, 'plan_id', 40)
   const endsAt = text(form, 'subscription_ends_at', 10)
   if (!(await queryOne('select 1 from plans where id = $1', [planId]))) back(path, { error: 'Unknown plan.' })
-  await query('update organizations set plan_id = $2, subscription_ends_at = $3 where id = $1',
+  // A plan set by a super admin is a regular subscription, not one funded by reward credit.
+  await query(`update organizations set plan_id = $2, subscription_ends_at = $3, plan_source = 'manual' where id = $1`,
     [orgId, planId, /^\d{4}-\d{2}-\d{2}$/.test(endsAt) ? `${endsAt}T23:59:59+01:00` : null])
   await audit({ actorId: admin.id, orgId, action: 'organization.plan_changed', entityType: 'organization', entityId: orgId, metadata: { planId, endsAt } })
   back(path, { ok: 'Plan updated.' })
@@ -198,6 +199,24 @@ export async function saveSettings(form: FormData) {
       signupsOpen: form.get('signupsOpen') === 'on',
       organizerApplicationsOpen: form.get('organizerApplicationsOpen') === 'on',
       reservationMinutes: Number.isInteger(minutes) && minutes >= 5 && minutes <= 1440 ? minutes : 30,
+    }
+  } else if (section === 'referrals') {
+    const whole = (key: string, min: number, max: number, fallback: number) => {
+      const value = Number(text(form, key, 12))
+      return Number.isInteger(value) && value >= min && value <= max ? value : fallback
+    }
+    const naira = (key: string, fallback: number) => {
+      const value = Number(text(form, key, 12).replace(/[,\s₦]/g, ''))
+      return Number.isFinite(value) && value >= 100 ? Math.round(value * 100) : fallback
+    }
+    value = {
+      enabled: form.get('enabled') === 'on',
+      friendsPerReward: whole('friendsPerReward', 1, 50, 5),
+      couponCapMinor: naira('couponCap', 1_000_000),
+      couponValidDays: whole('couponValidDays', 7, 365, 90),
+      maxRewardsPerMonth: whole('maxRewardsPerMonth', 1, 50, 3),
+      proThresholdMinor: naira('proThreshold', 5_000_000),
+      proMonthsPerRedemption: whole('proMonthsPerRedemption', 1, 12, 1),
     }
   } else {
     back(path, { error: 'Unknown settings section.' })

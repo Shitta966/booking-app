@@ -23,6 +23,7 @@ export type Organization = {
   contact_email: string | null
   contact_phone: string | null
   plan_id: string
+  plan_source: 'manual' | 'reward'
   status: 'pending' | 'active' | 'suspended'
   subscription_ends_at: Date | null
   bank_name: string | null
@@ -78,8 +79,16 @@ export const getMemberships = cache(async (userId: string) =>
 export async function requireOrgAccess(orgId: string, action: OrgAction = 'org.view') {
   const user = await requireUser(`/dashboard/${orgId}`)
   if (!/^[0-9a-f-]{36}$/i.test(orgId)) notFound()
-  const org = await queryOne<Organization>('select * from organizations where id = $1', [orgId])
+  let org = await queryOne<Organization>('select * from organizations where id = $1', [orgId])
   if (!org) notFound()
+  // Pro unlocked with reward credit ends on its date; the organisation returns to Starter.
+  if (org.plan_source === 'reward' && org.subscription_ends_at && new Date(org.subscription_ends_at) <= new Date()) {
+    org = (await queryOne<Organization>(
+      `update organizations set plan_id = 'starter', plan_source = 'manual', subscription_ends_at = null
+       where id = $1 and plan_source = 'reward' and subscription_ends_at <= now() returning *`,
+      [orgId],
+    )) ?? org
+  }
   const membership = await queryOne<{ role: OrgRole }>(
     'select role from organization_members where org_id = $1 and user_id = $2',
     [orgId, user.id],

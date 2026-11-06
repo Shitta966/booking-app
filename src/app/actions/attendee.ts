@@ -7,6 +7,7 @@ import { queryOne } from '@/lib/db'
 import { notify, orgStaff } from '@/lib/notify'
 import { hit } from '@/lib/rateLimit'
 import { cancelOwnOrder, createOrder, OrderError, submitPaymentReference } from '@/lib/orders'
+import { sendRewardNotices } from '@/lib/rewards'
 
 export async function bookTickets(form: FormData) {
   const eventId = text(form, 'event_id', 64)
@@ -19,8 +20,10 @@ export async function bookTickets(form: FormData) {
       holderName: user.full_name || user.email,
       ticketTypeId: text(form, 'ticket_type_id', 64),
       quantity: Number(form.get('quantity') ?? 1),
+      couponId: /^[0-9a-f-]{36}$/i.test(text(form, 'coupon_id', 64)) ? text(form, 'coupon_id', 64) : null,
     })
     orderId = order.id
+    await sendRewardNotices(order.notices)
     if (order.status === 'paid') {
       await notify([user.id], { kind: 'order.paid', title: 'Your tickets are ready', body: `Order ${order.reference} is confirmed. Show the QR code at the entrance.`, href: '/tickets' })
     }

@@ -27,6 +27,9 @@ export default async function PricingPage() {
           </div>
         ))}
       </div>
+      <div className="mt-10 rounded-3xl bg-gold-400/20 p-6 text-center text-sm text-moss-900">
+        <b>Earn Pro without paying for it.</b> Accept FUTICK reward tickets at your events and every reward used builds credit towards free months of Pro. <Link href="/rewards" className="font-semibold underline">How rewards work</Link>
+      </div>
       <div className="mt-10 text-center"><Link href="/signup?type=organizer" className="btn-primary">Apply as an organiser</Link></div>
     </main>
   )

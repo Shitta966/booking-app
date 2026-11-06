@@ -11,7 +11,7 @@ import { expireStaleOrders } from '@/lib/orders'
 export const metadata = { title: 'Order' }
 
 type OrderDetail = {
-  id: string; reference: string; status: string; total_minor: number; expires_at: Date | null; payment_reference: string | null; review_note: string | null
+  id: string; reference: string; status: string; total_minor: number; discount_minor: number; coupon_code: string | null; expires_at: Date | null; payment_reference: string | null; review_note: string | null
   title: string; event_id: string; bank_name: string | null; account_name: string | null; account_number: string | null; payment_instructions: string | null
 }
 
@@ -21,7 +21,7 @@ export default async function OrderPage({ params, searchParams }: { params: Prom
   if (!/^[0-9a-f-]{36}$/i.test(orderId)) notFound()
   await transaction(expireStaleOrders)
   const order = await queryOne<OrderDetail>(
-    `select o.id, o.reference, o.status, o.total_minor, o.expires_at, o.payment_reference, o.review_note, e.title, e.id as event_id,
+    `select o.id, o.reference, o.status, o.total_minor, o.discount_minor, (select code from reward_coupons where id = o.coupon_id) as coupon_code, o.expires_at, o.payment_reference, o.review_note, e.title, e.id as event_id,
             org.bank_name, org.account_name, org.account_number, org.payment_instructions
      from orders o join events e on e.id = o.event_id join organizations org on org.id = o.org_id
      where o.id = $1 and o.user_id = $2`,
@@ -46,6 +46,9 @@ export default async function OrderPage({ params, searchParams }: { params: Prom
         {items.map((item) => (
           <div key={item.name} className="flex justify-between p-4 text-sm"><span>{item.quantity} × {item.name}</span><span>{formatMoney(item.unit_price_minor * item.quantity)}</span></div>
         ))}
+        {Number(order.discount_minor) > 0 && (
+          <div className="flex justify-between p-4 text-sm text-emerald-700"><span>FUTICK reward <span className="font-mono">{order.coupon_code}</span></span><span>−{formatMoney(Number(order.discount_minor))}</span></div>
+        )}
         <div className="flex justify-between p-4 font-semibold"><span>Total</span><span>{formatMoney(order.total_minor)}</span></div>
       </div>
 

@@ -5,6 +5,7 @@ import { toLagosInput } from '@/lib/format'
 export type EventFormValues = {
   id?: string; title: string; summary: string; description: string; category: string; venue: string
   start_time: Date | null; end_time: Date | null; poster_url: string | null; visibility: string
+  accepts_reward_coupons?: boolean
 }
 
 export function EventForm({ orgId, action, values, submitLabel }: { orgId: string; action: (form: FormData) => Promise<void>; values: EventFormValues; submitLabel: string }) {
@@ -24,6 +25,13 @@ export function EventForm({ orgId, action, values, submitLabel }: { orgId: strin
       <label className="field">Ends (Lagos time)<input type="datetime-local" name="end_time" required defaultValue={values.end_time ? toLagosInput(values.end_time) : ''} className="input" /></label>
       <label className="field md:col-span-2">Visibility
         <select name="visibility" defaultValue={values.visibility} className="input"><option value="public">Public — listed on FUTICK</option><option value="unlisted">Unlisted — only people with the link</option></select>
+      </label>
+      <label className="flex items-start gap-3 rounded-2xl bg-gold-400/15 p-4 text-sm md:col-span-2">
+        <input type="checkbox" name="accepts_reward_coupons" defaultChecked={values.accepts_reward_coupons ?? true} className="mt-0.5 size-4 accent-brand-600" />
+        <span>
+          <span className="block font-semibold text-slate-900">Accept FUTICK reward tickets</span>
+          <span className="block text-xs text-slate-600">Attendees who earned a free ticket by inviting friends can use it here. You don’t lose out: each reward used adds its value to your Pro credit, which unlocks free months of FUTICK Pro.</span>
+        </span>
       </label>
       <div className="md:col-span-2"><button className="btn-primary">{submitLabel}</button></div>
     </form>

@@ -12,6 +12,8 @@ import { slugify } from '@/lib/format'
 import { notify, superAdmins } from '@/lib/notify'
 import { passwordProblem } from '@/lib/passwords'
 import { clear, clientIp, hit, isBlocked } from '@/lib/rateLimit'
+import { cookies } from 'next/headers'
+import { findReferrer, shortName } from '@/lib/rewards'
 
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
 
@@ -79,10 +81,13 @@ export async function signup(form: FormData) {
   if (await queryOne('select 1 from users where email = $1', [email])) back('/signup', { error: 'An account with this email already exists. Log in instead.' })
 
   const passwordHash = await bcrypt.hash(password, 12)
+  // Referral: from the invite form field, or the cookie set when the visitor first opened an invite link.
+  const cookieStore = await cookies()
+  const referrer = await findReferrer(text(form, 'ref', 20) || cookieStore.get('futick_ref')?.value)
   const { userId, orgId } = await transaction(async (db) => {
     const [user] = await db.query<{ id: string }>(
-      'insert into users (email, password_hash, full_name, phone) values ($1, $2, $3, $4) returning id',
-      [email, passwordHash, fullName, phone],
+      'insert into users (email, password_hash, full_name, phone, referred_by) values ($1, $2, $3, $4, $5) returning id',
+      [email, passwordHash, fullName, phone, referrer?.id ?? null],
     )
     let createdOrg: string | null = null
     if (asOrganizer) {
@@ -98,6 +103,14 @@ export async function signup(form: FormData) {
     return { userId: user.id, orgId: createdOrg }
   })
   await acceptInvitations(userId, email)
+  if (referrer) {
+    cookieStore.delete('futick_ref')
+    await audit({ actorId: userId, action: 'referral.joined', entityType: 'user', entityId: referrer.id })
+    await notify([referrer.id], {
+      kind: 'referral.joined', title: `${shortName(fullName)} joined with your invite`,
+      body: 'They count towards your free ticket as soon as they book their first ticket.', href: '/rewards',
+    })
+  }
   if (orgId) await notify(await superAdmins(), { kind: 'organization.applied', title: 'New organisation to verify', body: `${orgName} applied to host events.`, href: `/admin/organizations/${orgId}` })
   await startSession(userId, 1)
   redirect(orgId ? `/dashboard/${orgId}` : safeNext(text(form, 'next', 300) || '/events'))

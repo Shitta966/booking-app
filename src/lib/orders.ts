@@ -1,7 +1,8 @@
 import 'server-only'
 import { audit } from './audit'
 import { transaction, type Queryable } from './db'
-import { getSettings } from './settings'
+import { onOrderPaid, releaseCoupon, reverseCoupon, type RewardNotice } from './rewards'
+import { getSettings, type ReferralSettings } from './settings'
 import { generateOrderReference, generateTicketCode } from './tickets'
 
 export class OrderError extends Error {}
@@ -14,6 +15,8 @@ type LockedOrder = {
   user_id: string
   status: string
   expires_at: Date | null
+  coupon_id: string | null
+  discount_minor: number
 }
 
 /** Releases inventory held by unpaid orders whose reservation window has passed. */
@@ -23,6 +26,7 @@ export async function expireStaleOrders(db: Queryable) {
   )
   for (const order of stale) {
     await releaseReservation(db, order.id)
+    await releaseCoupon(db, order.id)
     await db.query(`update orders set status = 'expired', updated_at = now() where id = $1`, [order.id])
   }
   return stale.length
@@ -52,8 +56,9 @@ async function issueTickets(db: Queryable, order: LockedOrder, holderName: strin
   }
 }
 
-export async function createOrder(input: { userId: string; holderName: string; ticketTypeId: string; quantity: number }) {
-  const { features } = await getSettings()
+export async function createOrder(input: { userId: string; holderName: string; ticketTypeId: string; quantity: number; couponId?: string | null }) {
+  const { features, referrals } = await getSettings()
+  const notices: RewardNotice[] = []
   return transaction(async (db) => {
     await expireStaleOrders(db)
     const [ticket] = await db.query<{
@@ -62,8 +67,8 @@ export async function createOrder(input: { userId: string; holderName: string; t
     }>('select * from ticket_types where id = $1 for update', [input.ticketTypeId])
     if (!ticket || !ticket.is_active) throw new OrderError('This ticket type is not on sale.')
 
-    const [event] = await db.query<{ id: string; org_id: string; status: string; end_time: Date; org_status: string; account_number: string | null; ticket_fee_percent: number }>(
-      `select e.id, e.org_id, e.status, e.end_time, o.status as org_status, o.account_number, p.ticket_fee_percent
+    const [event] = await db.query<{ id: string; org_id: string; status: string; end_time: Date; org_status: string; account_number: string | null; ticket_fee_percent: number; accepts_reward_coupons: boolean }>(
+      `select e.id, e.org_id, e.status, e.end_time, e.accepts_reward_coupons, o.status as org_status, o.account_number, p.ticket_fee_percent
        from events e join organizations o on o.id = e.org_id join plans p on p.id = o.plan_id where e.id = $1`,
       [ticket.event_id],
     )
@@ -77,28 +82,47 @@ export async function createOrder(input: { userId: string; holderName: string; t
       throw new OrderError('Not enough tickets remain.')
     }
 
-    const total = ticket.price_minor * input.quantity
+    // A reward coupon covers one ticket, up to its value cap.
+    let discount = 0
+    let couponId: string | null = null
+    if (input.couponId) {
+      if (!referrals.enabled) throw new OrderError('Rewards are paused at the moment.')
+      if (!event.accepts_reward_coupons) throw new OrderError('This event does not accept FUTICK reward tickets.')
+      if (ticket.price_minor === 0) throw new OrderError('This ticket is already free — keep your reward for a paid ticket.')
+      const [coupon] = await db.query<{ id: string; status: string; expires_at: Date; value_cap_minor: number }>(
+        'select id, status, expires_at, value_cap_minor from reward_coupons where id = $1 and user_id = $2 for update',
+        [input.couponId, input.userId],
+      )
+      if (!coupon || coupon.status !== 'available') throw new OrderError('That reward has already been used.')
+      if (new Date(coupon.expires_at) <= new Date()) throw new OrderError('That reward has expired.')
+      couponId = coupon.id
+      discount = Math.min(ticket.price_minor, Number(coupon.value_cap_minor))
+    }
+
+    const total = ticket.price_minor * input.quantity - discount
     const isFree = total === 0
     if (!isFree && !event.account_number) throw new OrderError('The organiser has not set up payment details yet.')
     const fee = Math.round((total * Number(event.ticket_fee_percent)) / 100)
 
     const [order] = await db.query<LockedOrder>(
-      `insert into orders (reference, org_id, event_id, user_id, status, total_minor, platform_fee_minor, expires_at)
-       values ($1, $2, $3, $4, $5, $6, $7, $8) returning *`,
+      `insert into orders (reference, org_id, event_id, user_id, status, total_minor, platform_fee_minor, expires_at, coupon_id, discount_minor)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning *`,
       [generateOrderReference(), event.org_id, event.id, input.userId, isFree ? 'paid' : 'pending_payment', total, fee,
-        isFree ? null : new Date(Date.now() + features.reservationMinutes * 60_000)],
+        isFree ? null : new Date(Date.now() + features.reservationMinutes * 60_000), couponId, discount],
     )
+    if (couponId) await db.query(`update reward_coupons set status = 'reserved', order_id = $2 where id = $1`, [couponId, order.id])
     await db.query('insert into order_items (order_id, ticket_type_id, quantity, unit_price_minor) values ($1, $2, $3, $4)',
       [order.id, ticket.id, input.quantity, ticket.price_minor])
 
     if (isFree) {
       await db.query('update ticket_types set quantity_sold = quantity_sold + $2 where id = $1', [ticket.id, input.quantity])
       await issueTickets(db, order, input.holderName)
+      await onOrderPaid(db, order, referrals, notices)
     } else {
       await db.query('update ticket_types set quantity_reserved = quantity_reserved + $2 where id = $1', [ticket.id, input.quantity])
     }
-    await audit({ actorId: input.userId, orgId: event.org_id, action: 'order.created', entityType: 'order', entityId: order.id, metadata: { reference: order.reference, total } }, db)
-    return order
+    await audit({ actorId: input.userId, orgId: event.org_id, action: 'order.created', entityType: 'order', entityId: order.id, metadata: { reference: order.reference, total, discount } }, db)
+    return { ...order, notices }
   })
 }
 
@@ -125,16 +149,19 @@ export async function cancelOwnOrder(userId: string, orderId: string) {
     const [order] = await db.query<LockedOrder>('select * from orders where id = $1 and user_id = $2 for update', [orderId, userId])
     if (!order || !['pending_payment', 'awaiting_review'].includes(order.status)) throw new OrderError('This order cannot be cancelled.')
     await releaseReservation(db, order.id)
+    await releaseCoupon(db, order.id)
     await db.query(`update orders set status = 'cancelled', updated_at = now() where id = $1`, [order.id])
     await audit({ actorId: userId, orgId: order.org_id, action: 'order.cancelled_by_attendee', entityType: 'order', entityId: order.id }, db)
   })
 }
 
-export async function confirmOrder(orgId: string, reviewerId: string, orderId: string) {
+export async function confirmOrder(orgId: string, reviewerId: string, orderId: string, rules?: ReferralSettings): Promise<RewardNotice[]> {
+  const referrals = rules ?? (await getSettings()).referrals
+  const notices: RewardNotice[] = []
   return transaction(async (db) => {
     const [order] = await db.query<LockedOrder>('select * from orders where id = $1 and org_id = $2 for update', [orderId, orgId])
     if (!order) throw new OrderError('Order not found.')
-    if (order.status === 'paid') return
+    if (order.status === 'paid') return notices
     if (!['pending_payment', 'awaiting_review'].includes(order.status)) throw new OrderError('Only unpaid orders can be confirmed.')
     if (order.status === 'pending_payment' && order.expires_at && new Date(order.expires_at) <= new Date()) {
       throw new OrderError('The reservation expired before payment was confirmed.')
@@ -154,7 +181,9 @@ export async function confirmOrder(orgId: string, reviewerId: string, orderId: s
       `update orders set status = 'paid', reviewed_by = $2, reviewed_at = now(), expires_at = null, updated_at = now() where id = $1`,
       [order.id, reviewerId],
     )
+    await onOrderPaid(db, order, referrals, notices)
     await audit({ actorId: reviewerId, orgId, action: 'order.confirmed', entityType: 'order', entityId: order.id }, db)
+    return notices
   })
 }
 
@@ -186,8 +215,10 @@ export async function cancelOrderAsOrganizer(orgId: string, actorId: string, ord
         [order.id],
       )
       await db.query(`update tickets set status = 'cancelled' where order_id = $1`, [order.id])
+      await reverseCoupon(db, order.id)
     } else {
       await releaseReservation(db, order.id)
+      await releaseCoupon(db, order.id)
     }
     await db.query(`update orders set status = 'cancelled', reviewed_by = $2, reviewed_at = now(), updated_at = now() where id = $1`, [order.id, actorId])
     await audit({ actorId, orgId, action: 'order.cancelled_by_organizer', entityType: 'order', entityId: order.id }, db)

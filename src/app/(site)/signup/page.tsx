@@ -5,6 +5,9 @@ import { AuthFrame } from '@/components/AuthFrame'
 import { Flash } from '@/components/ui'
 import { getCurrentUser } from '@/lib/auth'
 import { ORG_KINDS } from '@/lib/constants'
+import { cookies } from 'next/headers'
+import { Gift } from 'lucide-react'
+import { findReferrer, shortName } from '@/lib/rewards'
 import { getSettings } from '@/lib/settings'
 
 export const metadata = { title: 'Create an account' }
@@ -12,16 +15,25 @@ export const metadata = { title: 'Create an account' }
 export default async function SignupPage({ searchParams }: { searchParams: Promise<Record<string, string>> }) {
   const params = await searchParams
   if (await getCurrentUser()) redirect(params.type === 'organizer' ? '/organizers/new' : '/tickets')
-  const { features } = await getSettings()
+  const { features, referrals } = await getSettings()
+  const refCode = params.ref ?? (await cookies()).get('futick_ref')?.value
+  const referrer = referrals.enabled ? await findReferrer(refCode) : null
   const organizerFirst = params.type === 'organizer' && features.organizerApplicationsOpen
 
   return (
     <AuthFrame eyebrow="Join FUTICK" title="Create your account" subtitle="Attendees book and carry tickets. Organisers also get an event dashboard."
       footer={<>Already registered? <Link href="/login" className="font-medium text-moss-950 underline underline-offset-4">Log in</Link></>}>
+        {referrer && (
+          <div className="mb-5 flex items-start gap-3 rounded-2xl bg-gold-400/20 p-4 text-sm text-moss-900">
+            <span className="grid size-9 shrink-0 place-items-center rounded-full bg-gold-400 text-moss-950"><Gift size={17} /></span>
+            <p><b>{shortName(referrer.full_name)} invited you to FUTICK.</b> Book your first ticket and you help them earn a free one — then invite your own friends and earn yours.</p>
+          </div>
+        )}
         <Flash searchParams={params} />
         {!features.signupsOpen ? <p className="text-sm text-slate-600">New sign-ups are paused at the moment.</p> : (
           <form action={signup} className="group flex flex-col gap-4">
             <input type="hidden" name="next" value={params.next ?? ''} />
+            {referrer && <input type="hidden" name="ref" value={refCode ?? ''} />}
             <fieldset className="grid grid-cols-2 gap-2">
               <legend className="mb-2 text-sm font-medium text-slate-700">I want to</legend>
               <label className="flex cursor-pointer flex-col rounded-2xl border border-moss-200 p-3.5 text-sm has-[:checked]:border-moss-800 has-[:checked]:bg-moss-50">

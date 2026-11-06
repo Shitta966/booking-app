@@ -269,6 +269,65 @@ create table if not exists rate_limits (
   count integer not null default 0
 );
 
+-- Refer & earn -------------------------------------------------------------------------------------
+-- Attendees invite friends; every N friends who book their first ticket earns a free-ticket coupon.
+-- Coupons redeemed at an event earn that organiser credit towards FUTICK Pro.
+alter table users add column if not exists referral_code text unique;
+alter table users add column if not exists referred_by uuid references users (id) on delete set null;
+alter table users add column if not exists referral_qualified_at timestamptz;
+create index if not exists users_referred_by_idx on users (referred_by);
+
+alter table events add column if not exists accepts_reward_coupons boolean not null default true;
+
+alter table organizations add column if not exists plan_source text not null default 'manual';
+do $$ begin
+  alter table organizations add constraint organizations_plan_source_check check (plan_source in ('manual', 'reward'));
+exception when duplicate_object then null; end $$;
+
+create table if not exists reward_coupons (
+  id uuid primary key default gen_random_uuid(),
+  code text not null unique,
+  user_id uuid not null references users (id) on delete cascade,
+  source text not null default 'referral' check (source in ('referral', 'admin')),
+  value_cap_minor bigint not null check (value_cap_minor > 0),
+  -- reserved: attached to an unpaid order; used: that order was paid.
+  status text not null default 'available' check (status in ('available', 'reserved', 'used', 'revoked')),
+  order_id uuid,
+  expires_at timestamptz not null,
+  created_at timestamptz not null default now(),
+  used_at timestamptz
+);
+create index if not exists reward_coupons_user_idx on reward_coupons (user_id, status);
+
+alter table orders add column if not exists coupon_id uuid references reward_coupons (id) on delete set null;
+alter table orders add column if not exists discount_minor bigint not null default 0;
+
+create table if not exists org_reward_redemptions (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references organizations (id) on delete cascade,
+  credits_minor bigint not null check (credits_minor > 0),
+  months integer not null check (months > 0),
+  redeemed_by uuid references users (id) on delete set null,
+  plan_ends_at timestamptz not null,
+  created_at timestamptz not null default now()
+);
+
+-- One row per redeemed coupon (amount = the ticket value FUTICK covered), plus carry-over rows.
+create table if not exists org_reward_credits (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references organizations (id) on delete cascade,
+  order_id uuid unique references orders (id) on delete set null,
+  amount_minor bigint not null check (amount_minor > 0),
+  note text not null default '',
+  redemption_id uuid references org_reward_redemptions (id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create index if not exists org_reward_credits_open_idx on org_reward_credits (org_id) where redemption_id is null;
+
+insert into platform_settings (key, value) values
+  ('referrals', '{"enabled": true, "friendsPerReward": 5, "couponCapMinor": 1000000, "couponValidDays": 90, "maxRewardsPerMonth": 3, "proThresholdMinor": 5000000, "proMonthsPerRedemption": 1}'::jsonb)
+on conflict (key) do nothing;
+
 -- Lock every table away from Supabase's auto-generated REST/GraphQL APIs.
 -- FUTICK talks to the database only from its own server, connecting as the table owner, which bypasses
 -- RLS. With RLS on and no policies, the public `anon` and `authenticated` API roles can read nothing —
@@ -281,7 +340,7 @@ begin
   foreach t in array array[
     'users', 'plans', 'organizations', 'organization_members', 'invitations', 'events', 'ticket_types', 'orders',
     'order_items', 'tickets', 'check_ins', 'event_tasks', 'platform_settings', 'audit_logs', 'uploads',
-    'notifications', 'push_subscriptions', 'rate_limits'
+    'notifications', 'push_subscriptions', 'rate_limits', 'reward_coupons', 'org_reward_redemptions', 'org_reward_credits'
   ] loop
     execute format('alter table %I enable row level security', t);
   end loop;

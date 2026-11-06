@@ -1,5 +1,5 @@
 import Link from 'next/link'
-import { ArrowUpRight, CalendarDays, MapPin } from 'lucide-react'
+import { ArrowUpRight, CalendarDays, Gift, MapPin } from 'lucide-react'
 import type { PublicEvent } from '@/lib/events'
 import { formatMoney, formatShortDate, formatTime } from '@/lib/format'
 
@@ -12,6 +12,9 @@ export function EventCard({ event }: { event: PublicEvent }) {
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img src={event.poster_url ?? FALLBACK_POSTER} alt="" className="size-full object-cover transition duration-500 group-hover:scale-105" loading="lazy" />
         <span className="absolute left-4 top-4 rounded-full bg-white/85 px-3 py-1 text-[11px] font-medium text-moss-900 backdrop-blur">{event.category}</span>
+        {event.accepts_reward_coupons && event.min_price !== null && event.min_price > 0 && (
+          <span className="absolute right-4 top-4 flex items-center gap-1 rounded-full bg-gold-400 px-2.5 py-1 text-[11px] font-semibold text-moss-950"><Gift size={12} />Rewards</span>
+        )}
         <span className="absolute bottom-4 right-4 grid size-10 place-items-center rounded-full bg-white text-moss-900 opacity-0 transition group-hover:opacity-100"><ArrowUpRight size={18} /></span>
       </div>
       <p className="mt-4 flex items-center gap-1.5 text-xs text-moss-800/60"><CalendarDays size={13} />{formatShortDate(event.start_time)} · {formatTime(event.start_time)}</p>

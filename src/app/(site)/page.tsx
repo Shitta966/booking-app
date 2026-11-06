@@ -1,11 +1,12 @@
 import Link from 'next/link'
 import {
-  ArrowRight, BriefcaseBusiness, ClipboardList, CreditCard, GraduationCap, Hammer, Mic,
+  ArrowRight, BriefcaseBusiness, ClipboardList, CreditCard, Crown, Gift, GraduationCap, Hammer, Mic,
   Presentation, QrCode, ScanLine, Ticket, Trophy, Users, UtensilsCrossed, type LucideIcon,
 } from 'lucide-react'
 import { EventCard } from '@/components/EventCard'
 import { query } from '@/lib/db'
 import { CAMPUSES, EVENT_CATEGORIES, listPublicEvents } from '@/lib/events'
+import { formatMoney } from '@/lib/format'
 import { getSettings } from '@/lib/settings'
 
 const HERO_IMAGE = 'https://images.unsplash.com/photo-1501854140801-50d01698950b?auto=format&fit=crop&w=2400&q=80'
@@ -22,7 +23,7 @@ const CATEGORY_ICONS: Array<[string, LucideIcon]> = [
 ]
 
 export default async function HomePage() {
-  const [{ homepage, branding }, upcoming, [stats]] = await Promise.all([
+  const [{ homepage, branding, referrals }, upcoming, [stats]] = await Promise.all([
     getSettings(),
     listPublicEvents({ limit: 3 }),
     query<{ events: number; tickets: number; orgs: number }>(
@@ -129,6 +130,40 @@ export default async function HomePage() {
           </div>
         ))}
       </section>
+
+      {referrals.enabled && (
+        <section className="mx-auto mt-20 max-w-6xl px-5">
+          <div className="text-center">
+            <p className="text-xs font-medium uppercase tracking-[0.2em] text-moss-400">Refer & earn</p>
+            <h2 className="mx-auto mt-3 max-w-2xl text-balance text-3xl font-medium tracking-tight text-moss-950 md:text-4xl">Good events are better with friends. We reward you for bringing them.</h2>
+          </div>
+          <div className="mt-10 grid gap-5 md:grid-cols-[1.2fr_1fr]">
+            <div className="relative overflow-hidden rounded-[2rem] bg-gold-400 p-8 text-moss-950 md:p-10">
+              <span className="grid size-12 place-items-center rounded-2xl bg-moss-950 text-gold-400"><Gift size={22} /></span>
+              <p className="mt-6 text-sm font-semibold uppercase tracking-widest text-moss-900/70">For attendees</p>
+              <h3 className="mt-2 text-balance text-3xl font-medium leading-tight tracking-tight md:text-4xl">Invite {referrals.friendsPerReward} friends. Get a ticket free.</h3>
+              <p className="mt-3 max-w-md text-moss-900/80">Share your link. When {referrals.friendsPerReward} friends join and book their first ticket, you get a free ticket worth up to {formatMoney(referrals.couponCapMinor)} at events that accept FUTICK rewards.</p>
+              <div className="mt-6 flex items-center gap-2" aria-hidden="true">
+                {Array.from({ length: referrals.friendsPerReward }, (_, index) => (
+                  <span key={index} className="grid size-10 place-items-center rounded-full border-2 border-moss-950/20 bg-white/60 text-moss-900"><Users size={16} /></span>
+                ))}
+                <ArrowRight size={18} className="mx-1" />
+                <span className="grid size-12 place-items-center rounded-full bg-moss-950 text-gold-400"><Ticket size={20} /></span>
+              </div>
+              <Link href="/rewards" className="mt-8 inline-flex items-center gap-2 rounded-full bg-moss-950 px-6 py-3 text-sm font-medium text-white hover:bg-moss-900">Get my invite link <ArrowRight size={15} /></Link>
+            </div>
+            <div className="flex flex-col rounded-[2rem] bg-moss-950 p-8 text-white md:p-10">
+              <span className="grid size-12 place-items-center rounded-2xl bg-white/10 text-gold-400"><Crown size={22} /></span>
+              <p className="mt-6 text-sm font-semibold uppercase tracking-widest text-white/50">For organisers</p>
+              <h3 className="mt-2 text-balance text-3xl font-medium leading-tight tracking-tight">Rewards fill your seats — and pay you back in Pro.</h3>
+              <p className="mt-3 text-white/70">Every reward ticket used at your event adds its value to your Pro credit. Each {formatMoney(referrals.proThresholdMinor)} unlocks {referrals.proMonthsPerRedemption} month{referrals.proMonthsPerRedemption === 1 ? '' : 's'} of FUTICK Pro: more events, bigger capacity, lower fees.</p>
+              <div className="mt-auto pt-8">
+                <Link href="/signup?type=organizer" className="inline-flex items-center gap-2 rounded-full bg-white px-6 py-3 text-sm font-medium text-moss-950 hover:bg-moss-100">Host with rewards <ArrowRight size={15} /></Link>
+              </div>
+            </div>
+          </div>
+        </section>
+      )}
 
       <section className="mx-auto mt-24 max-w-6xl px-5">
         <div className="text-center">

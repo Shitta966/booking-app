@@ -44,6 +44,13 @@ export function proxy(request: NextRequest) {
   requestHeaders.set('Content-Security-Policy', csp)
 
   const response = NextResponse.next({ request: { headers: requestHeaders } })
+  // Remember who invited this visitor (?ref=CODE) so the referral still counts if they sign up later.
+  const ref = request.nextUrl.searchParams.get('ref')
+  if (ref && /^[A-Za-z0-9]{6,12}$/.test(ref) && !request.cookies.has('futick_session')) {
+    response.cookies.set('futick_ref', ref.toUpperCase(), {
+      httpOnly: true, sameSite: 'lax', secure: process.env.NODE_ENV === 'production', path: '/', maxAge: 60 * 60 * 24 * 30,
+    })
+  }
   response.headers.set('Content-Security-Policy', csp)
   response.headers.set('X-Frame-Options', 'DENY')
   response.headers.set('X-Content-Type-Options', 'nosniff')

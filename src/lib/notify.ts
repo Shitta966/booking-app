@@ -5,6 +5,7 @@ import { sendPush } from './push'
 export type NotificationKind =
   | 'payment.submitted' | 'order.paid' | 'payment.rejected' | 'order.cancelled' | 'event.cancelled'
   | 'organization.applied' | 'organization.approved' | 'organization.suspended' | 'team.added' | 'security.password_changed'
+  | 'referral.joined' | 'referral.qualified' | 'reward.earned' | 'reward.redeemed_at_event' | 'organization.pro_unlocked'
 
 type Message = { kind: NotificationKind; title: string; body?: string; href?: string | null }
 

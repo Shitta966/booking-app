@@ -14,6 +14,7 @@ export default async function SiteLayout({ children }: { children: React.ReactNo
     { href: '/', label: 'Home' },
     { href: '/events', label: 'Events' },
     { href: '/pricing', label: 'Pricing' },
+    { href: '/rewards', label: 'Earn' },
     { href: user ? '/tickets' : '/login?next=/tickets', label: 'My tickets' },
   ]
 

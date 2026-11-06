@@ -3,10 +3,12 @@
 import { redirect, unstable_rethrow } from 'next/navigation'
 import { audit } from '@/lib/audit'
 import { requireOrgAccess, type OrgAccess } from '@/lib/auth'
-import { query, queryOne } from '@/lib/db'
+import { query, queryOne, transaction } from '@/lib/db'
 import { fromLagosInput, nairaToMinor } from '@/lib/format'
 import { back, errorMessage, text } from '@/lib/forms'
-import { notify, notifyEventCancelled } from '@/lib/notify'
+import { notify, notifyEventCancelled, orgStaff } from '@/lib/notify'
+import { getSettings } from '@/lib/settings'
+import { sendRewardNotices } from '@/lib/rewards'
 import { cancelOrderAsOrganizer, confirmOrder, rejectPayment } from '@/lib/orders'
 import { EVENT_CATEGORIES } from '@/lib/events'
 import { saveImageUpload, UploadError } from '@/lib/uploads'
@@ -43,6 +45,7 @@ function readEventForm(form: FormData) {
     category: EVENT_CATEGORIES.includes(category) ? category : 'Other',
     venue: text(form, 'venue', 200),
     visibility: form.get('visibility') === 'unlisted' ? 'unlisted' : 'public',
+    acceptsRewards: form.get('accepts_reward_coupons') === 'on',
     start, end,
   }
   if (fields.title.length < 3) return { error: 'Give the event a title.' } as const
@@ -80,9 +83,9 @@ export async function createEvent(form: FormData) {
   const { fields } = parsed
   const poster = await readPoster(form, org.id, user.id, null, `/dashboard/${org.id}/events/new`)
   const [event] = await query<{ id: string }>(
-    `insert into events (org_id, title, summary, description, category, venue, start_time, end_time, poster_url, visibility, created_by)
-     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning id`,
-    [org.id, fields.title, fields.summary, fields.description, fields.category, fields.venue, fields.start, fields.end, poster, fields.visibility, user.id],
+    `insert into events (org_id, title, summary, description, category, venue, start_time, end_time, poster_url, visibility, created_by, accepts_reward_coupons)
+     values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) returning id`,
+    [org.id, fields.title, fields.summary, fields.description, fields.category, fields.venue, fields.start, fields.end, poster, fields.visibility, user.id, fields.acceptsRewards],
   )
   await audit({ actorId: user.id, orgId: org.id, action: 'event.created', entityType: 'event', entityId: event.id })
   redirect(`/dashboard/${org.id}/events/${event.id}?tab=tickets&ok=${encodeURIComponent('Event created as a draft. Add ticket types, then publish.')}`)
@@ -105,8 +108,8 @@ export async function updateEvent(form: FormData) {
   const poster = await readPoster(form, org.id, user.id, existing.poster_url, path)
   await query(
     `update events set title = $3, summary = $4, description = $5, category = $6, venue = $7, start_time = $8, end_time = $9,
-       poster_url = $10, visibility = $11, updated_at = now() where id = $1 and org_id = $2`,
-    [eventId, org.id, fields.title, fields.summary, fields.description, fields.category, fields.venue, fields.start, fields.end, poster, fields.visibility],
+       poster_url = $10, visibility = $11, accepts_reward_coupons = $12, updated_at = now() where id = $1 and org_id = $2`,
+    [eventId, org.id, fields.title, fields.summary, fields.description, fields.category, fields.venue, fields.start, fields.end, poster, fields.visibility, fields.acceptsRewards],
   )
   await audit({ actorId: user.id, orgId: org.id, action: 'event.updated', entityType: 'event', entityId: eventId })
   back(path, { ok: 'Event saved.' })
@@ -249,7 +252,7 @@ export async function reviewOrder(form: FormData) {
   const order = await queryOne<{ user_id: string; reference: string; title: string }>(
     'select o.user_id, o.reference, e.title from orders o join events e on e.id = o.event_id where o.id = $1 and o.org_id = $2', [orderId, org.id])
   try {
-    if (decision === 'confirm') await confirmOrder(org.id, user.id, orderId)
+    if (decision === 'confirm') await sendRewardNotices(await confirmOrder(org.id, user.id, orderId))
     else if (decision === 'reject') await rejectPayment(org.id, user.id, orderId, text(form, 'note', 300))
     else if (decision === 'cancel') await cancelOrderAsOrganizer(org.id, user.id, orderId)
     else throw new Error('Unknown decision.')
@@ -341,4 +344,67 @@ export async function updateOrgSettings(form: FormData) {
   )
   await audit({ actorId: user.id, orgId: org.id, action: 'organization.settings_updated', entityType: 'organization', entityId: org.id })
   back(path, { ok: 'Settings saved.' })
+}
+
+/** Spends the organisation's reward credit on FUTICK Pro: each full threshold buys the configured months. */
+export async function redeemRewardsForPro(form: FormData) {
+  const orgId = text(form, 'org_id', 64)
+  const path = `/dashboard/${orgId}/rewards`
+  const { org, user } = await access(form, 'org.settings', path)
+  if (org.plan_id === 'enterprise') back(path, { error: 'You are already on Enterprise, which includes everything in Pro.' })
+  const { referrals } = await getSettings()
+  const threshold = referrals.proThresholdMinor
+  const result = await transaction(async (db) => {
+    const credits = await db.query<{ id: string; amount_minor: number }>(
+      'select id, amount_minor from org_reward_credits where org_id = $1 and redemption_id is null order by created_at for update',
+      [org.id],
+    )
+    const total = credits.reduce((sum, credit) => sum + Number(credit.amount_minor), 0)
+    const sets = Math.floor(total / threshold)
+    if (sets < 1) return null
+    const months = sets * referrals.proMonthsPerRedemption
+    const spent = sets * threshold
+    const [current] = await db.query<{ plan_id: string; plan_source: string; subscription_ends_at: Date | null }>(
+      'select plan_id, plan_source, subscription_ends_at from organizations where id = $1 for update',
+      [org.id],
+    )
+    // Extend from the current end date if Pro is still running, otherwise from today.
+    const startFrom = current.plan_id === 'pro' && current.subscription_ends_at && new Date(current.subscription_ends_at) > new Date()
+      ? new Date(current.subscription_ends_at)
+      : new Date()
+    const endsAt = new Date(startFrom)
+    endsAt.setMonth(endsAt.getMonth() + months)
+    const [redemption] = await db.query<{ id: string }>(
+      `insert into org_reward_redemptions (org_id, credits_minor, months, redeemed_by, plan_ends_at) values ($1, $2, $3, $4, $5) returning id`,
+      [org.id, spent, months, user.id, endsAt],
+    )
+    await db.query('update org_reward_credits set redemption_id = $2 where id = any($1::uuid[])', [credits.map((credit) => credit.id), redemption.id])
+    if (total - spent > 0) {
+      await db.query(`insert into org_reward_credits (org_id, amount_minor, note) values ($1, $2, 'Carried over from last redemption')`, [org.id, total - spent])
+    }
+    // A paid (manual) Pro subscription keeps its source; Starter organisations get reward-funded Pro.
+    await db.query(
+      `update organizations set plan_id = 'pro', subscription_ends_at = $2,
+         plan_source = case when plan_id = 'pro' and plan_source = 'manual' then 'manual' else 'reward' end
+       where id = $1`,
+      [org.id, endsAt],
+    )
+    await audit({ actorId: user.id, orgId: org.id, action: 'organization.pro_redeemed', entityType: 'organization', entityId: org.id, metadata: { months, spent } }, db)
+    return { months, endsAt }
+  })
+  if (!result) back(path, { error: `You need ₦${(threshold / 100).toLocaleString('en-NG')} of reward credit to unlock Pro.` })
+  await notify(await orgStaff(org.id, ['owner', 'admin']), {
+    kind: 'organization.pro_unlocked', title: `${org.name} unlocked FUTICK Pro`,
+    body: `${result.months} month${result.months === 1 ? '' : 's'} of Pro, paid for by reward tickets at your events.`, href: `/dashboard/${org.id}/rewards`,
+  })
+  back(path, { ok: `Pro unlocked for ${result.months} month${result.months === 1 ? '' : 's'}. Enjoy the higher limits!` })
+}
+
+export async function toggleEventRewards(form: FormData) {
+  const orgId = text(form, 'org_id', 64)
+  const path = `/dashboard/${orgId}/rewards`
+  const { org } = await access(form, 'events.manage', path)
+  const accept = form.get('accept') === 'on'
+  await query('update events set accepts_reward_coupons = $3, updated_at = now() where id = $1 and org_id = $2', [text(form, 'event_id', 64), org.id, accept])
+  back(path, { ok: accept ? 'This event now accepts reward tickets.' : 'Reward tickets are switched off for this event.' })
 }
