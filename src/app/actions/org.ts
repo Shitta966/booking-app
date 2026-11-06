@@ -352,6 +352,9 @@ export async function redeemRewardsForPro(form: FormData) {
   const path = `/dashboard/${orgId}/rewards`
   const { org, user } = await access(form, 'org.settings', path)
   if (org.plan_id === 'enterprise') back(path, { error: 'You are already on Enterprise, which includes everything in Pro.' })
+  if (org.plan_id === 'pro' && org.plan_source === 'manual' && !org.subscription_ends_at) {
+    back(path, { error: 'Your Pro plan has no end date, so there is nothing to extend. Your credit stays saved.' })
+  }
   const { referrals } = await getSettings()
   const threshold = referrals.proThresholdMinor
   const result = await transaction(async (db) => {

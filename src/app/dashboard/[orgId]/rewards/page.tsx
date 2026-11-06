@@ -46,7 +46,9 @@ export default async function OrgRewardsPage({ params, searchParams }: { params:
   const balance = Number(totals.balance)
   const share = Math.min(100, Math.round((balance / threshold) * 100))
   const ready = balance >= threshold
-  const canRedeem = can(role, 'org.settings') && org.plan_id !== 'enterprise'
+  // Enterprise, or a paid Pro plan with no end date, has nothing for reward months to extend.
+  const unlimitedPro = org.plan_id === 'pro' && org.plan_source === 'manual' && !org.subscription_ends_at
+  const canRedeem = can(role, 'org.settings') && org.plan_id !== 'enterprise' && !unlimitedPro
   const months = Math.floor(balance / threshold) * referrals.proMonthsPerRedemption
   const proActive = org.plan_id === 'pro' && org.subscription_ends_at && new Date(org.subscription_ends_at) > new Date()
 
@@ -68,6 +70,7 @@ export default async function OrgRewardsPage({ params, searchParams }: { params:
               <p className="text-white/60">Current plan</p>
               <p className="font-semibold capitalize">{org.plan_id}{org.plan_source === 'reward' ? ' (rewards)' : ''}</p>
               {proActive && <p className="text-xs text-white/60">until {formatDate(org.subscription_ends_at!)}</p>}
+              {unlimitedPro && <p className="text-xs text-white/60">no end date</p>}
             </div>
           </div>
           <div className="mt-6 h-3 overflow-hidden rounded-full bg-white/15">
@@ -84,7 +87,7 @@ export default async function OrgRewardsPage({ params, searchParams }: { params:
                   <Crown size={16} /> Redeem for {months} month{months === 1 ? '' : 's'} of Pro
                 </ConfirmButton>
               ) : <button disabled className="btn bg-white/15 text-white/70">Keep accepting rewards to unlock Pro</button>
-            ) : <p className="text-sm text-white/70">{org.plan_id === 'enterprise' ? 'Enterprise already includes everything in Pro.' : 'Only owners and admins can redeem credit.'}</p>}
+            ) : <p className="text-sm text-white/70">{org.plan_id === 'enterprise' ? 'Enterprise already includes everything in Pro.' : unlimitedPro ? 'Your Pro plan has no end date, so there is nothing to extend. Your credit stays saved for later.' : 'Only owners and admins can redeem credit.'}</p>}
           </form>
         </section>
 
