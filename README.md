@@ -79,6 +79,15 @@ See `ROADMAP.md` for what still has to happen before a public launch.
   - added to a team → that person;
   - password changed → the account owner.
 
+## Payments
+
+Super admins choose how attendees pay under **Admin → Payments**:
+
+- **Flutterwave** (card, bank transfer, USSD) and **Stripe** (international cards). Paste the keys, add the webhook URL shown on the page to the provider's dashboard, and click **Test connection**. Secret keys are encrypted before they are stored and are never shown again.
+- **Manual bank transfer** to the organiser's own account, confirmed by the organiser. Can be switched off.
+
+Online payments land in the platform's gateway account. FUTICK only marks an order paid after checking the payment with the provider server-to-server, and only when the amount and currency match the order exactly. Both the buyer's return page and the webhook can confirm a payment, but only the first one counts. If money arrives after the seat hold lapsed, the seats are claimed again if any are left. Otherwise the payment is flagged for refund, and both super admins and the buyer are alerted. The Payments page lists what each organiser is owed (online sales less the platform fee) and records payouts.
+
 ## Security
 
 - Signed session cookies (HttpOnly, SameSite=Lax, Secure in production). Changing a password, suspension, or "sign out everywhere" revokes all sessions.

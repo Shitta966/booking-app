@@ -328,6 +328,47 @@ insert into platform_settings (key, value) values
   ('referrals', '{"enabled": true, "friendsPerReward": 5, "couponCapMinor": 1000000, "couponValidDays": 90, "maxRewardsPerMonth": 3, "proThresholdMinor": 5000000, "proMonthsPerRedemption": 1}'::jsonb)
 on conflict (key) do nothing;
 
+-- Online payments ------------------------------------------------------------------------------------
+-- Card / bank / USSD payments through Stripe or Flutterwave, configured by super admins. Money lands in
+-- the platform's gateway account; organisers are paid out (recorded in payouts) less the platform fee.
+alter table orders add column if not exists payment_method text not null default 'bank_transfer';
+do $$ begin
+  alter table orders add constraint orders_payment_method_check check (payment_method in ('bank_transfer', 'stripe', 'flutterwave', 'free'));
+exception when duplicate_object then null; end $$;
+
+create table if not exists payments (
+  id uuid primary key default gen_random_uuid(),
+  order_id uuid not null references orders (id) on delete cascade,
+  provider text not null check (provider in ('stripe', 'flutterwave')),
+  -- Stripe Checkout Session id, or our Flutterwave tx_ref.
+  provider_ref text not null,
+  -- Stripe PaymentIntent id, or Flutterwave transaction id, once paid.
+  provider_txn_id text,
+  amount_minor bigint not null check (amount_minor >= 0),
+  currency text not null default 'NGN',
+  status text not null default 'initiated' check (status in ('initiated', 'succeeded', 'failed', 'refund_needed')),
+  note text not null default '',
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (provider, provider_ref)
+);
+create index if not exists payments_order_idx on payments (order_id);
+create index if not exists payments_status_idx on payments (status, created_at desc);
+
+create table if not exists payouts (
+  id uuid primary key default gen_random_uuid(),
+  org_id uuid not null references organizations (id) on delete cascade,
+  amount_minor bigint not null check (amount_minor > 0),
+  reference text not null default '',
+  paid_by uuid references users (id) on delete set null,
+  created_at timestamptz not null default now()
+);
+create index if not exists payouts_org_idx on payouts (org_id, created_at desc);
+
+insert into platform_settings (key, value) values
+  ('payments', '{"bankTransferEnabled": true, "stripe": {"enabled": false}, "flutterwave": {"enabled": false}}'::jsonb)
+on conflict (key) do nothing;
+
 -- Lock every table away from Supabase's auto-generated REST/GraphQL APIs.
 -- FUTICK talks to the database only from its own server, connecting as the table owner, which bypasses
 -- RLS. With RLS on and no policies, the public `anon` and `authenticated` API roles can read nothing —
@@ -340,7 +381,7 @@ begin
   foreach t in array array[
     'users', 'plans', 'organizations', 'organization_members', 'invitations', 'events', 'ticket_types', 'orders',
     'order_items', 'tickets', 'check_ins', 'event_tasks', 'platform_settings', 'audit_logs', 'uploads',
-    'notifications', 'push_subscriptions', 'rate_limits', 'reward_coupons', 'org_reward_redemptions', 'org_reward_credits'
+    'notifications', 'push_subscriptions', 'rate_limits', 'reward_coupons', 'org_reward_redemptions', 'org_reward_credits', 'payments', 'payouts'
   ] loop
     execute format('alter table %I enable row level security', t);
   end loop;

@@ -6,6 +6,9 @@ import { requireSuperAdmin } from '@/lib/auth'
 import { query, queryOne, transaction } from '@/lib/db'
 import { back, text } from '@/lib/forms'
 import { passwordProblem } from '@/lib/passwords'
+import { getPaymentConfig, PROVIDER_LABELS, savePaymentSettings, type Provider } from '@/lib/payments/config'
+import { testFlutterwave } from '@/lib/payments/flutterwave'
+import { testStripe } from '@/lib/payments/stripe'
 import { notify, notifyEventCancelled, orgStaff } from '@/lib/notify'
 
 function returnPath(form: FormData, fallback: string) {
@@ -228,4 +231,78 @@ export async function saveSettings(form: FormData) {
   )
   await audit({ actorId: admin.id, action: 'settings.updated', entityType: 'platform_settings', entityId: section, metadata: value })
   back(path, { ok: 'Settings saved.' })
+}
+
+const PAYMENTS_PATH = '/admin/payments'
+
+function readProvider(form: FormData): Provider {
+  const provider = text(form, 'provider', 20)
+  if (provider !== 'stripe' && provider !== 'flutterwave') back(PAYMENTS_PATH, { error: 'Unknown payment provider.' })
+  return provider
+}
+
+export async function savePaymentGateway(form: FormData) {
+  const admin = await requireSuperAdmin()
+  const provider = readProvider(form)
+  const secretKey = text(form, 'secret_key', 300)
+  const webhookSecret = text(form, 'webhook_secret', 300)
+  const publicKey = text(form, 'public_key', 300)
+  if (provider === 'stripe' && secretKey && !/^(sk|rk)_(test|live)_/.test(secretKey)) back(PAYMENTS_PATH, { error: 'A Stripe secret key starts with sk_test_ or sk_live_.' })
+  if (provider === 'stripe' && webhookSecret && !webhookSecret.startsWith('whsec_')) back(PAYMENTS_PATH, { error: 'A Stripe webhook signing secret starts with whsec_.' })
+  if (provider === 'stripe' && publicKey && !/^pk_(test|live)_/.test(publicKey)) back(PAYMENTS_PATH, { error: 'A Stripe publishable key starts with pk_test_ or pk_live_.' })
+  if (provider === 'flutterwave' && secretKey && !/^FLWSECK/i.test(secretKey)) back(PAYMENTS_PATH, { error: 'A Flutterwave secret key starts with FLWSECK.' })
+  if (provider === 'flutterwave' && publicKey && !/^FLWPUBK/i.test(publicKey)) back(PAYMENTS_PATH, { error: 'A Flutterwave public key starts with FLWPUBK.' })
+  const clearSecrets = form.get('clear_secrets') === 'on'
+  await savePaymentSettings({ provider, enabled: form.get('enabled') === 'on', publicKey, secretKey, webhookSecret, clearSecrets }, admin.id)
+  const config = await getPaymentConfig()
+  await audit({ actorId: admin.id, action: 'payments.gateway_saved', entityType: 'platform_settings', entityId: provider, metadata: { enabled: config[provider].enabled, keyChanged: Boolean(secretKey), webhookChanged: Boolean(webhookSecret), cleared: clearSecrets } })
+  if (form.get('enabled') === 'on' && !config[provider].secretKey) back(PAYMENTS_PATH, { error: `${PROVIDER_LABELS[provider]} stays off until a secret key is saved.` })
+  back(PAYMENTS_PATH, { ok: `${PROVIDER_LABELS[provider]} settings saved${config[provider].enabled ? ' — live for attendees' : ''}.` })
+}
+
+export async function testPaymentGateway(form: FormData) {
+  await requireSuperAdmin()
+  const provider = readProvider(form)
+  const { secretKey } = (await getPaymentConfig())[provider]
+  if (!secretKey) back(PAYMENTS_PATH, { error: `Save a ${PROVIDER_LABELS[provider]} secret key first.` })
+  let message: string
+  try {
+    message = provider === 'stripe' ? await testStripe(secretKey) : await testFlutterwave(secretKey)
+  } catch (error) {
+    const reason = error instanceof Error ? error.message.replace(/^(Stripe|Flutterwave):\s*/, '').slice(0, 160) : 'unknown error'
+    back(PAYMENTS_PATH, { error: `${PROVIDER_LABELS[provider]} rejected the key: ${reason}` })
+  }
+  back(PAYMENTS_PATH, { ok: `${PROVIDER_LABELS[provider]}: ${message}` })
+}
+
+export async function saveBankTransfer(form: FormData) {
+  const admin = await requireSuperAdmin()
+  const enabled = form.get('enabled') === 'on'
+  await savePaymentSettings({ bankTransferEnabled: enabled }, admin.id)
+  await audit({ actorId: admin.id, action: 'payments.bank_transfer', entityType: 'platform_settings', entityId: 'payments', metadata: { enabled } })
+  back(PAYMENTS_PATH, { ok: enabled ? 'Manual bank transfer is on.' : 'Manual bank transfer is off. Attendees pay online.' })
+}
+
+/** Online sales owed to an organiser: paid online orders, less platform fees, less payouts already made. */
+export async function recordPayout(form: FormData) {
+  const admin = await requireSuperAdmin()
+  const orgId = text(form, 'org_id', 64)
+  const amount = Math.round(Number(text(form, 'amount', 20).replace(/[,\s₦]/g, '')) * 100)
+  const reference = text(form, 'reference', 120)
+  if (!Number.isFinite(amount) || amount <= 0) back(PAYMENTS_PATH, { error: 'Enter the amount you paid out.' })
+  if (reference.length < 3) back(PAYMENTS_PATH, { error: 'Enter the bank transfer reference for the payout.' })
+  const done = await transaction(async (db) => {
+    await db.query('select id from organizations where id = $1 for update', [orgId])
+    const [{ owed }] = await db.query<{ owed: number }>(
+      `select coalesce((select sum(total_minor - platform_fee_minor) from orders where org_id = $1 and status = 'paid' and payment_method in ('stripe', 'flutterwave')), 0)
+            - coalesce((select sum(amount_minor) from payouts where org_id = $1), 0) as owed`,
+      [orgId],
+    )
+    if (amount > Number(owed)) return false
+    await db.query('insert into payouts (org_id, amount_minor, reference, paid_by) values ($1, $2, $3, $4)', [orgId, amount, reference, admin.id])
+    await audit({ actorId: admin.id, orgId, action: 'payout.recorded', entityType: 'organization', entityId: orgId, metadata: { amount, reference } }, db)
+    return true
+  })
+  if (!done) back(PAYMENTS_PATH, { error: 'That is more than this organiser is owed.' })
+  back(PAYMENTS_PATH, { ok: 'Payout recorded.' })
 }

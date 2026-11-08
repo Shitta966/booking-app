@@ -18,7 +18,8 @@ function contentSecurityPolicy(nonce: string) {
     `manifest-src 'self'`,
     `object-src 'none'`,
     `base-uri 'self'`,
-    `form-action 'self'`,
+    // Pay-online buttons redirect to the gateways' hosted checkout pages.
+    `form-action 'self' https://checkout.stripe.com https://checkout.flutterwave.com`,
     `frame-ancestors 'none'`,
     ...(isDev ? [] : ['upgrade-insecure-requests']),
   ].join('; ')

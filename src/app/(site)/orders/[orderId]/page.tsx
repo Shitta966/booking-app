@@ -1,12 +1,14 @@
 import Link from 'next/link'
 import { ConfirmButton } from '@/components/Modal'
 import { notFound } from 'next/navigation'
-import { cancelOrder, submitPayment } from '@/app/actions/attendee'
+import { CreditCard, Landmark } from 'lucide-react'
+import { cancelOrder, payOnline, submitPayment } from '@/app/actions/attendee'
 import { Badge, Flash } from '@/components/ui'
 import { requireUser } from '@/lib/auth'
 import { query, queryOne, transaction } from '@/lib/db'
 import { formatDateTime, formatMoney } from '@/lib/format'
 import { expireStaleOrders } from '@/lib/orders'
+import { getPaymentConfig } from '@/lib/payments/config'
 
 export const metadata = { title: 'Order' }
 
@@ -28,6 +30,8 @@ export default async function OrderPage({ params, searchParams }: { params: Prom
     [orderId, user.id],
   )
   if (!order) notFound()
+  const payments = await getPaymentConfig()
+  const bankAvailable = payments.bankTransferEnabled && Boolean(order.account_number)
   const items = await query<{ name: string; quantity: number; unit_price_minor: number }>(
     'select tt.name, i.quantity, i.unit_price_minor from order_items i join ticket_types tt on tt.id = i.ticket_type_id where i.order_id = $1',
     [order.id],
@@ -56,10 +60,33 @@ export default async function OrderPage({ params, searchParams }: { params: Prom
         <div className="card mt-6 p-5 text-sm"><p className="font-semibold text-emerald-700">Payment confirmed. Your tickets are ready.</p><Link href="/tickets" className="btn-primary mt-4">View tickets</Link></div>
       )}
 
-      {order.status === 'pending_payment' && (
+      {order.status === 'pending_payment' && (payments.stripe.enabled || payments.flutterwave.enabled) && (
         <div className="card mt-6 p-5">
-          <h2 className="font-semibold">Pay by bank transfer</h2>
-          {order.review_note && <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">The organiser could not verify your last transfer: {order.review_note}</p>}
+          <h2 className="flex items-center gap-2 font-semibold"><CreditCard size={18} /> Pay online — tickets are issued instantly</h2>
+          {order.review_note && <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">{order.review_note}</p>}
+          <p className="mt-1 text-sm text-slate-500">Pay <b>{formatMoney(order.total_minor)}</b> securely on the payment provider’s page{order.expires_at ? <> before <b>{formatDateTime(order.expires_at)}</b></> : null}. FUTICK never sees your card details.</p>
+          <form action={payOnline} className="mt-4 grid gap-2 sm:grid-cols-2">
+            <input type="hidden" name="order_id" value={order.id} />
+            {payments.flutterwave.enabled && (
+              <button name="provider" value="flutterwave" className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left hover:border-brand-500 hover:bg-brand-50">
+                <span><span className="block text-sm font-semibold text-slate-900">Flutterwave</span><span className="block text-xs text-slate-500">Card, bank transfer, USSD</span></span>
+                <span className="rounded-full bg-[#f5a623] px-2.5 py-1 text-[11px] font-bold text-white">Pay</span>
+              </button>
+            )}
+            {payments.stripe.enabled && (
+              <button name="provider" value="stripe" className="flex items-center justify-between gap-3 rounded-2xl border border-slate-200 bg-white px-4 py-3 text-left hover:border-brand-500 hover:bg-brand-50">
+                <span><span className="block text-sm font-semibold text-slate-900">Stripe</span><span className="block text-xs text-slate-500">Visa, Mastercard and international cards</span></span>
+                <span className="rounded-full bg-[#635bff] px-2.5 py-1 text-[11px] font-bold text-white">Pay</span>
+              </button>
+            )}
+          </form>
+        </div>
+      )}
+
+      {order.status === 'pending_payment' && bankAvailable && (
+        <div className="card mt-6 p-5">
+          <h2 className="flex items-center gap-2 font-semibold"><Landmark size={18} /> {payments.stripe.enabled || payments.flutterwave.enabled ? 'Or pay by bank transfer' : 'Pay by bank transfer'}</h2>
+          {order.review_note && !(payments.stripe.enabled || payments.flutterwave.enabled) && <p className="mt-2 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-800">The organiser could not verify your last transfer: {order.review_note}</p>}
           <dl className="mt-4 grid gap-3 text-sm sm:grid-cols-3">
             <div><dt className="text-xs text-slate-500">Bank</dt><dd className="font-semibold">{order.bank_name}</dd></div>
             <div><dt className="text-xs text-slate-500">Account name</dt><dd className="font-semibold">{order.account_name}</dd></div>

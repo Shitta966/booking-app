@@ -14,7 +14,7 @@ const FILTERS = [['awaiting_review', 'To review'], ['pending_payment', 'Awaiting
 
 type OrderRow = {
   id: string; reference: string; status: string; total_minor: number; payment_reference: string | null; created_at: Date; expires_at: Date | null
-  title: string; full_name: string; email: string; quantity: number
+  title: string; full_name: string; email: string; quantity: number; payment_method: string
 }
 
 export default async function OrdersPage({ params, searchParams }: { params: Promise<{ orgId: string }>; searchParams: Promise<Record<string, string>> }) {
@@ -24,7 +24,7 @@ export default async function OrdersPage({ params, searchParams }: { params: Pro
   await transaction(expireStaleOrders)
   const filter = FILTERS.some(([key]) => key === search.status) ? search.status : 'awaiting_review'
   const orders = await query<OrderRow>(
-    `select o.id, o.reference, o.status, o.total_minor, o.payment_reference, o.created_at, o.expires_at, e.title, u.full_name, u.email,
+    `select o.id, o.reference, o.status, o.total_minor, o.payment_method, o.payment_reference, o.created_at, o.expires_at, e.title, u.full_name, u.email,
             (select sum(quantity) from order_items where order_id = o.id) as quantity
      from orders o join events e on e.id = o.event_id join users u on u.id = o.user_id
      where o.org_id = $1 and ($2 = 'all' or o.status = $2) order by o.created_at desc limit 300`,
@@ -71,7 +71,7 @@ export default async function OrdersPage({ params, searchParams }: { params: Pro
                 <td data-label="Event">{order.title}<p className="text-xs text-slate-500">{order.quantity} ticket{order.quantity === 1 ? '' : 's'}</p></td>
                 <td data-label="Amount" className="font-semibold">{formatMoney(order.total_minor)}</td>
                 <td data-label="Transfer ref" className="font-mono text-xs">{order.payment_reference ?? '—'}</td>
-                <td data-label="Status"><Badge status={order.status} />{order.expires_at && <p className="mt-1 text-xs text-slate-500">holds until {formatDateTime(order.expires_at)}</p>}</td>
+                <td data-label="Status"><Badge status={order.status} />{order.status === 'paid' && order.payment_method !== 'bank_transfer' && <p className="mt-1 text-xs capitalize text-slate-500">via {order.payment_method}</p>}{order.expires_at && <p className="mt-1 text-xs text-slate-500">holds until {formatDateTime(order.expires_at)}</p>}</td>
                 <td data-label="" className="min-w-56">
                   <form action={reviewOrder} className="flex flex-wrap justify-end gap-1">
                     <input type="hidden" name="org_id" value={org.id} />

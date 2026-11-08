@@ -1,5 +1,4 @@
 import Link from 'next/link'
-import { headers } from 'next/headers'
 import { ArrowRight, Building2, Crown, Gift, Ticket, UserPlus, Users } from 'lucide-react'
 import { EventCard } from '@/components/EventCard'
 import { ShareInvite } from '@/components/ShareInvite'
@@ -9,6 +8,7 @@ import { listPublicEvents } from '@/lib/events'
 import { formatDate, formatMoney } from '@/lib/format'
 import { ensureReferralCode, shortName } from '@/lib/rewards'
 import { getSettings } from '@/lib/settings'
+import { siteUrl } from '@/lib/siteUrl'
 
 export const metadata = { title: 'Refer & earn' }
 
@@ -29,15 +29,6 @@ function ProgressRing({ value, total }: { value: number; total: number }) {
       </div>
     </div>
   )
-}
-
-async function siteUrl() {
-  const configured = process.env.NEXT_PUBLIC_APP_URL?.trim().replace(/\/$/, '')
-  if (configured && !configured.includes('localhost')) return configured
-  const list = await headers()
-  const host = list.get('x-forwarded-host') ?? list.get('host') ?? 'localhost:3000'
-  const protocol = list.get('x-forwarded-proto') ?? (host.startsWith('localhost') ? 'http' : 'https')
-  return `${protocol}://${host}`
 }
 
 const STEPS = [

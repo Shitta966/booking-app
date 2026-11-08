@@ -8,10 +8,11 @@ import { getSettings } from '@/lib/settings'
 export const metadata = { title: 'Super admin' }
 
 export default async function AdminLayout({ children }: { children: React.ReactNode }) {
-  const [user, { branding }, [{ pending }]] = await Promise.all([
+  const [user, { branding }, [{ pending }], [{ refunds }]] = await Promise.all([
     requireSuperAdmin(),
     getSettings(),
     query<{ pending: number }>(`select count(*) as pending from organizations where status = 'pending'`),
+    query<{ refunds: number }>(`select count(*) as refunds from payments where status = 'refund_needed'`),
   ])
   return (
     <DashboardShell
@@ -22,6 +23,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
         { href: '/admin/organizations', label: 'Organisations', icon: 'organizations', badge: pending },
         { href: '/admin/users', label: 'Users', icon: 'users' },
         { href: '/admin/events', label: 'Events', icon: 'events' },
+        { href: '/admin/payments', label: 'Payments', icon: 'payments', badge: refunds, badgeTone: 'red' },
         { href: '/admin/plans', label: 'Plans & pricing', icon: 'plans' },
         { href: '/admin/audit', label: 'Audit log', icon: 'audit' },
       ]}

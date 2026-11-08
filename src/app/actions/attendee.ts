@@ -8,6 +8,8 @@ import { notify, orgStaff } from '@/lib/notify'
 import { hit } from '@/lib/rateLimit'
 import { cancelOwnOrder, createOrder, OrderError, submitPaymentReference } from '@/lib/orders'
 import { sendRewardNotices } from '@/lib/rewards'
+import { GatewayError, startOnlineCheckout } from '@/lib/payments'
+import { siteUrl } from '@/lib/siteUrl'
 
 export async function bookTickets(form: FormData) {
   const eventId = text(form, 'event_id', 64)
@@ -61,4 +63,27 @@ export async function cancelOrder(form: FormData) {
     back(`/orders/${orderId}`, { error: errorMessage(error) })
   }
   back('/tickets', { ok: 'Order cancelled.' })
+}
+
+/** Sends the buyer to Stripe or Flutterwave to pay for one of their orders. */
+export async function payOnline(form: FormData) {
+  const orderId = text(form, 'order_id', 64)
+  const provider = text(form, 'provider', 20)
+  const user = await requireUser(`/orders/${orderId}`)
+  if (provider !== 'stripe' && provider !== 'flutterwave') back(`/orders/${orderId}`, { error: 'Choose a payment method.' })
+  if (!(await hit(`checkout:${user.id}`, 15, 3600))) back(`/orders/${orderId}`, { error: 'Too many payment attempts. Try again later.' })
+  let url: string
+  try {
+    url = await startOnlineCheckout({ userId: user.id, email: user.email, name: user.full_name, orderId, provider, baseUrl: await siteUrl() })
+  } catch (error) {
+    // Messages from the gateway itself (bad keys, outages) are for admins; attendees get a plain message.
+    const fromGateway = error instanceof GatewayError && /^(Stripe|Flutterwave):/.test(error.message)
+    if (fromGateway || !(error instanceof GatewayError)) console.error('[futick] online checkout failed', error)
+    back(`/orders/${orderId}`, {
+      error: error instanceof GatewayError && !fromGateway
+        ? error.message
+        : 'We couldn’t start the online payment just now. Please try again in a moment, or use another payment method.',
+    })
+  }
+  redirect(url)
 }

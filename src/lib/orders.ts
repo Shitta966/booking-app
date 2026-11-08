@@ -2,6 +2,7 @@ import 'server-only'
 import { audit } from './audit'
 import { transaction, type Queryable } from './db'
 import { onOrderPaid, releaseCoupon, reverseCoupon, type RewardNotice } from './rewards'
+import { getPaymentConfig } from './payments/config'
 import { getSettings, type ReferralSettings } from './settings'
 import { generateOrderReference, generateTicketCode } from './tickets'
 
@@ -58,6 +59,8 @@ async function issueTickets(db: Queryable, order: LockedOrder, holderName: strin
 
 export async function createOrder(input: { userId: string; holderName: string; ticketTypeId: string; quantity: number; couponId?: string | null }) {
   const { features, referrals } = await getSettings()
+  const payments = await getPaymentConfig()
+  const cardPayments = payments.stripe.enabled || payments.flutterwave.enabled
   const notices: RewardNotice[] = []
   return transaction(async (db) => {
     await expireStaleOrders(db)
@@ -101,14 +104,17 @@ export async function createOrder(input: { userId: string; holderName: string; t
 
     const total = ticket.price_minor * input.quantity - discount
     const isFree = total === 0
-    if (!isFree && !event.account_number) throw new OrderError('The organiser has not set up payment details yet.')
+    // Paid tickets need a way to pay: card payments (platform-wide) or this organiser's bank transfer.
+    if (!isFree && !cardPayments && !(payments.bankTransferEnabled && event.account_number)) {
+      throw new OrderError('This organiser cannot take payments yet.')
+    }
     const fee = Math.round((total * Number(event.ticket_fee_percent)) / 100)
 
     const [order] = await db.query<LockedOrder>(
-      `insert into orders (reference, org_id, event_id, user_id, status, total_minor, platform_fee_minor, expires_at, coupon_id, discount_minor)
-       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) returning *`,
+      `insert into orders (reference, org_id, event_id, user_id, status, total_minor, platform_fee_minor, expires_at, coupon_id, discount_minor, payment_method)
+       values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) returning *`,
       [generateOrderReference(), event.org_id, event.id, input.userId, isFree ? 'paid' : 'pending_payment', total, fee,
-        isFree ? null : new Date(Date.now() + features.reservationMinutes * 60_000), couponId, discount],
+        isFree ? null : new Date(Date.now() + features.reservationMinutes * 60_000), couponId, discount, isFree ? 'free' : 'bank_transfer'],
     )
     if (couponId) await db.query(`update reward_coupons set status = 'reserved', order_id = $2 where id = $1`, [couponId, order.id])
     await db.query('insert into order_items (order_id, ticket_type_id, quantity, unit_price_minor) values ($1, $2, $3, $4)',
@@ -129,6 +135,7 @@ export async function createOrder(input: { userId: string; holderName: string; t
 export async function submitPaymentReference(userId: string, orderId: string, reference: string) {
   const cleaned = reference.trim().slice(0, 120)
   if (cleaned.length < 4) throw new OrderError('Enter the transfer reference from your bank receipt.')
+  if (!(await getPaymentConfig()).bankTransferEnabled) throw new OrderError('Bank transfer is not available. Please pay online.')
   return transaction(async (db) => {
     await expireStaleOrders(db)
     const [order] = await db.query<LockedOrder>('select * from orders where id = $1 and user_id = $2 for update', [orderId, userId])
@@ -155,6 +162,27 @@ export async function cancelOwnOrder(userId: string, orderId: string) {
   })
 }
 
+/** Moves an unpaid order's held seats to sold, issues its tickets and marks it paid. */
+async function settleHeldOrder(db: Queryable, order: LockedOrder, reviewerId: string | null, method: string, rules: ReferralSettings, notices: RewardNotice[]) {
+  const items = await db.query<{ ticket_type_id: string; quantity: number }>('select ticket_type_id, quantity from order_items where order_id = $1', [order.id])
+  for (const item of items) {
+    const updated = await db.query(
+      `update ticket_types set quantity_reserved = quantity_reserved - $2, quantity_sold = quantity_sold + $2
+       where id = $1 and quantity_reserved >= $2 returning id`,
+      [item.ticket_type_id, item.quantity],
+    )
+    if (!updated.length) throw new OrderError('The reserved tickets are no longer held for this order.')
+  }
+  const [holder] = await db.query<{ full_name: string; email: string }>('select full_name, email from users where id = $1', [order.user_id])
+  await issueTickets(db, order, holder?.full_name || holder?.email || 'Attendee')
+  await db.query(
+    `update orders set status = 'paid', reviewed_by = $2, reviewed_at = case when $2::uuid is null then null else now() end,
+       expires_at = null, payment_method = $3, updated_at = now() where id = $1`,
+    [order.id, reviewerId, method],
+  )
+  await onOrderPaid(db, order, rules, notices)
+}
+
 export async function confirmOrder(orgId: string, reviewerId: string, orderId: string, rules?: ReferralSettings): Promise<RewardNotice[]> {
   const referrals = rules ?? (await getSettings()).referrals
   const notices: RewardNotice[] = []
@@ -166,25 +194,51 @@ export async function confirmOrder(orgId: string, reviewerId: string, orderId: s
     if (order.status === 'pending_payment' && order.expires_at && new Date(order.expires_at) <= new Date()) {
       throw new OrderError('The reservation expired before payment was confirmed.')
     }
-    const items = await db.query<{ ticket_type_id: string; quantity: number }>('select ticket_type_id, quantity from order_items where order_id = $1', [order.id])
-    for (const item of items) {
-      const updated = await db.query(
-        `update ticket_types set quantity_reserved = quantity_reserved - $2, quantity_sold = quantity_sold + $2
-         where id = $1 and quantity_reserved >= $2 returning id`,
-        [item.ticket_type_id, item.quantity],
-      )
-      if (!updated.length) throw new OrderError('The reserved tickets are no longer held for this order.')
-    }
-    const [holder] = await db.query<{ full_name: string; email: string }>('select full_name, email from users where id = $1', [order.user_id])
-    await issueTickets(db, order, holder?.full_name || holder?.email || 'Attendee')
-    await db.query(
-      `update orders set status = 'paid', reviewed_by = $2, reviewed_at = now(), expires_at = null, updated_at = now() where id = $1`,
-      [order.id, reviewerId],
-    )
-    await onOrderPaid(db, order, referrals, notices)
+    await settleHeldOrder(db, order, reviewerId, 'bank_transfer', referrals, notices)
     await audit({ actorId: reviewerId, orgId, action: 'order.confirmed', entityType: 'order', entityId: order.id }, db)
     return notices
   })
+}
+
+export type OnlineSettlement = 'paid' | 'reclaimed' | 'already_paid' | 'sold_out'
+
+/**
+ * Settles an order whose payment a gateway has confirmed. Runs inside the caller's transaction.
+ * Money can arrive after the seat hold lapsed: then the seats are claimed again if any are left, and
+ * otherwise the caller flags the payment for a refund.
+ */
+export async function settleOnlineOrder(db: Queryable, orderId: string, method: 'stripe' | 'flutterwave', rules: ReferralSettings, notices: RewardNotice[]): Promise<OnlineSettlement> {
+  const [order] = await db.query<LockedOrder>('select * from orders where id = $1 for update', [orderId])
+  if (!order) throw new OrderError('Order not found.')
+  if (order.status === 'paid') return 'already_paid'
+  if (['pending_payment', 'awaiting_review'].includes(order.status)) {
+    await settleHeldOrder(db, order, null, method, rules, notices)
+    return 'paid'
+  }
+  // Expired or cancelled: try to claim the seats again.
+  const items = await db.query<{ ticket_type_id: string; quantity: number }>('select ticket_type_id, quantity from order_items where order_id = $1', [order.id])
+  for (const item of items) {
+    const [stock] = await db.query<{ free: number }>(
+      'select quantity_total - quantity_sold - quantity_reserved as free from ticket_types where id = $1 for update',
+      [item.ticket_type_id],
+    )
+    if (!stock || stock.free < item.quantity) return 'sold_out'
+  }
+  for (const item of items) {
+    await db.query('update ticket_types set quantity_sold = quantity_sold + $2 where id = $1', [item.ticket_type_id, item.quantity])
+  }
+  const [holder] = await db.query<{ full_name: string; email: string }>('select full_name, email from users where id = $1', [order.user_id])
+  await issueTickets(db, order, holder?.full_name || holder?.email || 'Attendee')
+  await db.query(`update orders set status = 'paid', expires_at = null, payment_method = $2, updated_at = now() where id = $1`, [order.id, method])
+  // If the order's reward was handed back when it expired and is still unused, use it again; otherwise
+  // leave the coupon alone (it may now belong to another order) and skip the organiser credit.
+  let coupon = order.coupon_id
+  if (coupon) {
+    const reclaimed = await db.query(`update reward_coupons set status = 'reserved', order_id = $2 where id = $1 and status = 'available' returning id`, [coupon, order.id])
+    if (!reclaimed.length) coupon = null
+  }
+  await onOrderPaid(db, { ...order, coupon_id: coupon }, rules, notices)
+  return 'reclaimed'
 }
 
 export async function rejectPayment(orgId: string, reviewerId: string, orderId: string, note: string) {
